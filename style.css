@@ -189,8 +189,9 @@ textarea::placeholder { color: var(--ink-faint); }
 }
 
 .btn-primary {
-  font-size: 15px;
-  font-family: inherit;
+  font-size: 17px;
+  font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", sans-serif;
+  font-weight: 700;
   letter-spacing: 4px;
   color: #ffffff;
   background: var(--blue);
@@ -272,7 +273,7 @@ textarea::placeholder { color: var(--ink-faint); }
 
   /* 翻译按钮下移并放大 50% */
   .translate-row { padding: 48px 24px 24px; gap: 6px; }
-  .btn-primary { padding: 18px 84px; font-size: 18px; letter-spacing: 6px; }
+  .btn-primary { padding: 18px 84px; font-size: 20px; letter-spacing: 6px; }
   .hint { display: none; }
 
   .toast { bottom: 24px; }
