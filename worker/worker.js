@@ -14,6 +14,8 @@ const RATE_PER_DAY = 200; // 每 IP 每天上限
 
 const ALLOWED_ORIGINS = [
   "https://swyu22.github.io",
+  "https://www.flashtrans.xyz",
+  "https://flashtrans.xyz",
   "http://localhost:8000",
   "http://127.0.0.1:8000",
 ];
