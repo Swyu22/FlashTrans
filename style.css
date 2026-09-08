@@ -229,10 +229,45 @@ textarea::placeholder { color: var(--ink-faint); }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.error { background: var(--danger); }
 
-/* 移动端 */
+/* 移动端（视口 ≤768px 自动切换） */
 @media (max-width: 768px) {
-  .panels { gap: 14px; margin-top: 16px; }
-  .panel { height: auto; min-height: 0; }
-  textarea, .output { min-height: 140px; }
+  .site-header { padding: 14px 16px; }
+  .logo { width: 19px; height: 19px; }
+  .brand-name { font-size: 16px; }
   .tagline { display: none; }
+
+  /* 移动端顶对齐，避免软键盘弹出时内容跳动 */
+  .stage { justify-content: flex-start; padding-top: 16px; }
+
+  .panels {
+    gap: 16px;
+    margin-top: 0;
+    padding: 0 12px;
+  }
+
+  .panel {
+    height: auto;
+    min-height: 0;
+    border-radius: 10px;
+  }
+
+  .panel-head { padding: 10px 12px; }
+  .panel-foot { padding: 8px 10px; }
+
+  /* 16px 防止 iOS 聚焦输入框时自动放大页面 */
+  textarea, .output {
+    min-height: 150px;
+    font-size: 16px;
+    padding: 12px;
+  }
+
+  /* 触控目标放大 */
+  .btn-icon { width: 34px; height: 34px; }
+  .btn-icon svg { width: 16px; height: 16px; }
+
+  .translate-row { padding: 20px 24px 24px; gap: 6px; }
+  .btn-primary { padding: 12px 56px; }
+  .hint { display: none; }
+
+  .toast { bottom: 24px; }
 }
