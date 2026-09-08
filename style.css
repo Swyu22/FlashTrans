@@ -27,7 +27,7 @@ body {
 
 /* 顶栏 */
 .site-header {
-  max-width: 920px;
+  max-width: 1380px;
   width: 100%;
   margin: 0 auto;
   padding: 18px 24px;
@@ -61,13 +61,13 @@ body {
 
 /* 双栏主体 */
 .panels {
-  max-width: 920px;
+  max-width: 1380px;
   width: 100%;
   margin: 24px auto 0;
   padding: 0 24px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  grid-template-columns: 1fr;
+  gap: 16px;
   min-height: 0;
 }
 
@@ -77,8 +77,8 @@ body {
   background: #ffffff;
   display: flex;
   flex-direction: column;
-  height: calc(50vh - 110px);
-  min-height: 200px;
+  height: calc(30vh);
+  min-height: 150px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -177,10 +177,10 @@ textarea::placeholder { color: var(--ink-faint); }
 /* 翻译按钮行 */
 .translate-row {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 20px 24px 28px;
+  gap: 8px;
+  padding: 18px 24px 24px;
 }
 
 .btn-primary {
@@ -230,7 +230,7 @@ textarea::placeholder { color: var(--ink-faint); }
 
 /* 移动端 */
 @media (max-width: 768px) {
-  .panels { grid-template-columns: 1fr; gap: 14px; margin-top: 16px; }
+  .panels { gap: 14px; margin-top: 16px; }
   .panel { height: auto; min-height: 0; }
   textarea, .output { min-height: 140px; }
   .tagline { display: none; }
