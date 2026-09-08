@@ -108,6 +108,9 @@ export default {
     const systemPrompt =
       detectDirection(text) === "zh2en" ? env.PROMPT_ZH2EN : env.PROMPT_EN2ZH;
 
+    // 用标签包裹待译文本，配合提示词防止原文被当作指令执行
+    const userContent = "<source_text>\n" + text + "\n</source_text>";
+
     let dsResp;
     try {
       dsResp = await fetch(DEEPSEEK_URL, {
@@ -122,7 +125,7 @@ export default {
           stream: true,
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: text },
+            { role: "user", content: userContent },
           ],
         }),
       });
