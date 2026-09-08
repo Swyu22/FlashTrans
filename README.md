@@ -19,13 +19,14 @@
 
 ```
 浏览器 (GitHub Pages)  ──►  Cloudflare Worker  ──►  DeepSeek API
-     index.html              限流 / 选提示词 / 转发      deepseek-chat
-     style.css               密钥与提示词均为
-     app.js                  Cloudflare Secrets
+     index.html              api.flashtrans.xyz        deepseek-chat
+     style.css               限流 / 选提示词 / 转发
+     app.js                  密钥与提示词均为
+                            Cloudflare Secrets
 ```
 
-- **前端**（仓库根目录）：零构建纯静态三件套，由 GitHub Pages 直接托管。
-- **后端**（`worker/`）：Cloudflare Worker，负责按 IP 限流（每分钟 20 次 / 每天 200 次）、单次输入截断（8000 字符）、方向检测、转发 DeepSeek 并透传 SSE 流。
+- **前端**（仓库根目录）：零构建纯静态三件套，由 GitHub Pages 直接托管，支持 PWA（可添加到主屏幕）。
+- **后端**（`worker/`）：Cloudflare Worker，绑定自定义域名 `api.flashtrans.xyz`（同时保留默认 workers.dev 路由），负责按 IP 限流（每分钟 20 次 / 每天 200 次）、单次输入截断（8000 字符）、方向检测、转发 DeepSeek 并透传 SSE 流。
 
 ## 安全说明
 
