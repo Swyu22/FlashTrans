@@ -237,8 +237,8 @@ textarea::placeholder { color: var(--ink-faint); }
   .brand-name { font-size: 16px; }
   .tagline { display: none; }
 
-  /* 移动端顶对齐，避免软键盘弹出时内容跳动 */
-  .stage { justify-content: flex-start; padding-top: 16px; }
+  /* 移动端整体垂直居中 */
+  .stage { justify-content: center; }
 
   .panels {
     gap: 16px;
