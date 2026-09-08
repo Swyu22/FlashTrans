@@ -27,7 +27,7 @@ body {
 
 /* 顶栏 */
 .site-header {
-  max-width: 1200px;
+  max-width: 920px;
   width: 100%;
   margin: 0 auto;
   padding: 18px 24px;
@@ -52,14 +52,13 @@ body {
 
 /* 双栏主体 */
 .panels {
-  flex: 1;
-  max-width: 1200px;
+  max-width: 920px;
   width: 100%;
   margin: 24px auto 0;
   padding: 0 24px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 24px;
+  gap: 20px;
   min-height: 0;
 }
 
@@ -69,8 +68,8 @@ body {
   background: #ffffff;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 250px);
-  min-height: 340px;
+  height: calc(50vh - 110px);
+  min-height: 200px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -138,27 +137,31 @@ textarea::placeholder { color: var(--ink-faint); }
   border-top: 1px solid var(--line);
 }
 
-.btn-group { display: flex; gap: 8px; }
+.btn-group { display: flex; gap: 6px; }
 
-.btn {
-  font-size: 13px;
-  font-family: inherit;
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   color: var(--ink-weak);
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 5px 14px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
-.btn:hover {
+.btn-icon svg { width: 15px; height: 15px; }
+
+.btn-icon:hover {
   color: var(--blue);
   border-color: var(--blue);
   background: var(--blue-weak);
 }
 
-.btn:active { transform: scale(0.97); }
+.btn-icon:active { transform: scale(0.94); }
 
 .char-count { font-size: 12px; color: var(--ink-faint); }
 
@@ -218,8 +221,8 @@ textarea::placeholder { color: var(--ink-faint); }
 
 /* 移动端 */
 @media (max-width: 768px) {
-  .panels { grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
+  .panels { grid-template-columns: 1fr; gap: 14px; margin-top: 16px; }
   .panel { height: auto; min-height: 0; }
-  textarea, .output { min-height: 180px; }
+  textarea, .output { min-height: 140px; }
   .tagline { display: none; }
 }

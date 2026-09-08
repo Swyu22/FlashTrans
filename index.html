@@ -28,9 +28,15 @@
       <textarea id="input" placeholder="输入中文或英文，自动识别并互译" spellcheck="false" autofocus></textarea>
       <div class="panel-foot">
         <div class="btn-group">
-          <button type="button" id="btnPaste" class="btn">粘贴</button>
-          <button type="button" id="btnCopyInput" class="btn">复制</button>
-          <button type="button" id="btnClear" class="btn">清空</button>
+          <button type="button" id="btnPaste" class="btn-icon" title="粘贴" aria-label="粘贴">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+          </button>
+          <button type="button" id="btnCopyInput" class="btn-icon" title="复制原文" aria-label="复制原文">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <button type="button" id="btnClear" class="btn-icon" title="清空" aria-label="清空">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
         </div>
         <span class="char-count" id="charCount">0 字</span>
       </div>
@@ -44,7 +50,9 @@
       <div class="output" id="output"><span class="placeholder">译文将在此显示</span></div>
       <div class="panel-foot">
         <div class="btn-group">
-          <button type="button" id="btnCopyOutput" class="btn">复制</button>
+          <button type="button" id="btnCopyOutput" class="btn-icon" title="复制译文" aria-label="复制译文">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
         </div>
       </div>
     </section>
