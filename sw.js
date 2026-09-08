@@ -1,5 +1,5 @@
-/* FlashTrans Service Worker：静态资源离线缓存；API 请求一律直连不缓存 */
-const CACHE = "flashtrans-v1";
+/* FlashTrans Service Worker：网络优先、缓存兜底（离线可打开界面）；API 请求一律直连不缓存 */
+const CACHE = "flashtrans-v2";
 const ASSETS = ["./", "index.html", "style.css", "app.js", "manifest.json"];
 
 self.addEventListener("install", (e) => {
@@ -19,15 +19,14 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
+  // 网络优先：拿到新响应就更新缓存；网络失败时回退缓存（离线可用）
   e.respondWith(
-    caches.match(e.request).then(
-      (hit) =>
-        hit ||
-        fetch(e.request).then((resp) => {
-          const copy = resp.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy));
-          return resp;
-        })
-    )
+    fetch(e.request)
+      .then((resp) => {
+        const copy = resp.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        return resp;
+      })
+      .catch(() => caches.match(e.request))
   );
 });

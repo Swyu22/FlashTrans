@@ -102,11 +102,20 @@ async function translate() {
   setLoading(true);
   translated = "";
   renderOutput("");
+  // 看门狗：20 秒无任何数据则中断，避免网络不通时永远卡在"翻译中"
+  const ctrl = new AbortController();
+  let watchdog = null;
+  const armWatchdog = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => ctrl.abort(), 20000);
+  };
   try {
+    armWatchdog();
     const resp = await fetch(WORKER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
+      signal: ctrl.signal,
     });
     if (!resp.ok) {
       let msg = "请求失败（HTTP " + resp.status + "）";
@@ -122,6 +131,7 @@ async function translate() {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      armWatchdog(); // 每收到数据块重置看门狗
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop();
@@ -148,8 +158,13 @@ async function translate() {
     }
   } catch (e) {
     renderOutput(translated);
-    showToast(e.message || "网络错误，请稍后重试", true);
+    if (e && e.name === "AbortError") {
+      showToast("连接超时：当前网络可能无法访问翻译服务，请切换网络或开启代理后重试", true);
+    } else {
+      showToast(e.message || "网络错误，请稍后重试", true);
+    }
   } finally {
+    clearTimeout(watchdog);
     setLoading(false);
   }
 }
