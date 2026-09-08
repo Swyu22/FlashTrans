@@ -16,6 +16,8 @@ const ALLOWED_ORIGINS = [
   "https://swyu22.github.io",
   "https://www.flashtrans.xyz",
   "https://flashtrans.xyz",
+  "http://www.flashtrans.xyz",
+  "http://flashtrans.xyz",
   "http://localhost:8000",
   "http://127.0.0.1:8000",
 ];
