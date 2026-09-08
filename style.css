@@ -147,7 +147,7 @@ textarea::placeholder { color: var(--ink-faint); }
   border-top: 1px solid var(--line);
 }
 
-.btn-group { display: flex; gap: 6px; }
+.btn-group { display: flex; gap: 6px; align-items: center; }
 
 .btn-icon {
   display: inline-flex;
@@ -155,6 +155,7 @@ textarea::placeholder { color: var(--ink-faint); }
   justify-content: center;
   width: 30px;
   height: 30px;
+  padding: 0;
   color: var(--ink-weak);
   background: #ffffff;
   border: 1px solid var(--line);
@@ -163,7 +164,7 @@ textarea::placeholder { color: var(--ink-faint); }
   transition: all 0.15s ease;
 }
 
-.btn-icon svg { width: 15px; height: 15px; }
+.btn-icon svg { width: 15px; height: 15px; display: block; }
 
 .btn-icon:hover {
   color: var(--blue);

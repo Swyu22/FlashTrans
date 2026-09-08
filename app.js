@@ -196,3 +196,8 @@ btnClear.addEventListener("click", () => {
 });
 
 refreshMeta();
+
+// PWA：注册 Service Worker（仅 HTTPS 环境下生效）
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
