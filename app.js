@@ -1,7 +1,7 @@
 /* FlashTrans 前端逻辑 */
 
 // 部署 Worker 后替换为实际地址
-const WORKER_URL = "https://flashtrans-api.YOUR_SUBDOMAIN.workers.dev/";
+const WORKER_URL = "https://flashtrans-api.swyu17.workers.dev/";
 
 const input = document.getElementById("input");
 const output = document.getElementById("output");
