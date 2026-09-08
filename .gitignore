@@ -1,0 +1,8 @@
+# 机密目录：API Key 与翻译提示词只存本地，通过 wrangler secret put 注入，绝不入库
+secrets/
+node_modules/
+.wrangler/
+.dev.vars
+.DS_Store
+output/
+.playwright-cli/
