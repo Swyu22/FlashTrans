@@ -134,6 +134,7 @@ textarea::placeholder { color: var(--ink-faint); }
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--ink);
+  background: #f6f8fa;
 }
 
 .output .placeholder { color: #a8c0e8; }
