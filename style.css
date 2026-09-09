@@ -273,7 +273,7 @@ textarea::placeholder { color: var(--ink-faint); }
 
   /* 翻译按钮下移并放大 50% */
   .translate-row { padding: 48px 24px 24px; gap: 6px; }
-  .btn-primary { padding: 18px 84px; font-size: 20px; letter-spacing: 6px; }
+  .btn-primary { padding: 13px 59px; font-size: 20px; letter-spacing: 6px; }
   .hint { display: none; }
 
   .toast { bottom: 24px; }
