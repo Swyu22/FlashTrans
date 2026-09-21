@@ -264,6 +264,21 @@ textarea::placeholder { color: var(--ink-faint); }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.error { background: var(--danger); }
 
+/* 桌面端（视口 >768px）：左右双栏，左原文右译文；移动端保持现状 */
+@media (min-width: 769px) {
+  .panels { grid-template-columns: 1fr 1fr; }
+
+  /* 每窗高度 = 译文高 + 间隔 + 原文高，尽量多显示长文 */
+  .panel {
+    height: calc(60vh + 64px);
+    min-height: 364px;
+  }
+
+  /* DOM 顺序为译文在前（保持移动端顺序），桌面端视觉顺序改为原文在左 */
+  .panel-input { order: 1; }
+  .panel-output { order: 2; }
+}
+
 /* 移动端（视口 ≤768px 自动切换） */
 @media (max-width: 768px) {
   /* 品牌居中放大，去掉分割线 */
