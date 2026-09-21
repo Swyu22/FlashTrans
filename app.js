@@ -169,11 +169,283 @@ async function translate() {
   }
 }
 
+/* ---------- 语音输入（长按翻译按钮） ---------- */
+
+const ASR_URL = WORKER_URL.replace(/^http/, "ws") + "asr";
+const LONG_PRESS_MS = 500; // 超过即判定为长按
+const VOICE_MAX_MS = 60000; // 与服务端 60s 硬顶一致
+const CHUNK_BYTES = 6400; // 200ms @ 16kHz/16bit/单声道
+
+let pressTimer = null;
+let pressActive = false;
+let voiceStarting = false;
+let cancelVoiceStart = false;
+let voice = null; // 录音会话状态
+
+function setVoiceUI(active, label) {
+  btnTranslate.classList.toggle("recording", active);
+  btnTranslate.textContent = label || "翻 译";
+  [btnPaste, btnCopyInput, btnClear, btnCopyOutput].forEach((b) => {
+    b.disabled = active;
+  });
+  input.readOnly = active;
+}
+
+function floatTo16kPCM(float32, ratio) {
+  const outLen = Math.floor(float32.length / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    let s = float32[Math.floor(i * ratio)];
+    s = Math.max(-1, Math.min(1, s));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return new Uint8Array(out.buffer);
+}
+
+// 把攒够的 PCM 以 200ms 一包发出；flushAll=true 时连尾包一起发
+function drainChunks(v, flushAll) {
+  while (v.pendingLen >= CHUNK_BYTES || (flushAll && v.pendingLen > 0)) {
+    const take = flushAll && v.pendingLen < CHUNK_BYTES ? v.pendingLen : CHUNK_BYTES;
+    const out = new Uint8Array(take);
+    let off = 0;
+    while (off < take) {
+      const head = v.pending[0];
+      const n = Math.min(head.length, take - off);
+      out.set(head.subarray(0, n), off);
+      off += n;
+      if (n === head.length) v.pending.shift();
+      else v.pending[0] = head.subarray(n);
+    }
+    v.pendingLen -= take;
+    if (v.ws && v.ws.readyState === 1) v.ws.send(out);
+  }
+}
+
+function stopLocalAudio() {
+  if (!voice) return;
+  clearInterval(voice.countTimer);
+  try { voice.node && voice.node.disconnect(); } catch { /* 忽略 */ }
+  try { voice.gain && voice.gain.disconnect(); } catch { /* 忽略 */ }
+  if (voice.stream) voice.stream.getTracks().forEach((t) => t.stop());
+  if (voice.audioCtx) voice.audioCtx.close().catch(() => {});
+}
+
+function cleanupVoice() {
+  stopLocalAudio();
+  voice = null;
+}
+
+// 结束：填入最终文本并自动翻译；abnormal=true 表示异常结束
+function finalizeVoice(abnormal) {
+  if (!voice || voice.done) return;
+  voice.done = true;
+  const text = (voice.latestText || "").trim();
+  try { voice.ws.close(); } catch { /* 忽略 */ }
+  cleanupVoice();
+  setVoiceUI(false);
+  if (text) {
+    input.value = text;
+    refreshMeta();
+    translate();
+  } else if (!abnormal) {
+    showToast("未识别到语音，请长按后清晰说话", true);
+  }
+}
+
+function stopVoice(cancelled) {
+  if (voiceStarting && !voice) {
+    cancelVoiceStart = true; // 启动流程中松手：标记取消
+    return;
+  }
+  if (!voice || voice.finishing) return;
+  voice.finishing = true;
+  btnTranslate.textContent = "识别中…";
+  stopLocalAudio();
+  if (cancelled) {
+    try { voice.ws.close(); } catch { /* 忽略 */ }
+    cleanupVoice();
+    setVoiceUI(false);
+    return;
+  }
+  drainChunks(voice, true); // 尾包音频
+  if (voice.ws.readyState === 1) {
+    voice.ws.send(JSON.stringify({ type: "stop" }));
+  } else {
+    finalizeVoice(true);
+  }
+}
+
+async function startVoice() {
+  if (voice || voiceStarting || translating) return;
+  voiceStarting = true;
+  cancelVoiceStart = false;
+  setVoiceUI(true, "准备中…");
+  try {
+    // 1. 先取麦克风权限（拒绝则直接复位）
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+    } catch {
+      setVoiceUI(false);
+      showToast("无法访问麦克风，请检查浏览器权限设置", true);
+      return;
+    }
+    if (cancelVoiceStart) {
+      stream.getTracks().forEach((t) => t.stop());
+      setVoiceUI(false);
+      return;
+    }
+
+    // 2. 连接 ASR 代理
+    const ws = new WebSocket(ASR_URL);
+    ws.binaryType = "arraybuffer";
+    voice = {
+      ws, stream, audioCtx: null, node: null, gain: null,
+      pending: [], pendingLen: 0, latestText: "",
+      finishing: false, done: false, countTimer: null,
+      startTs: Date.now(), ratio: 1,
+    };
+
+    ws.onmessage = (e) => {
+      if (!voice) return;
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.error) {
+        showToast(msg.error, true);
+        finalizeVoice(true);
+        return;
+      }
+      if (msg.type === "timeout") {
+        stopLocalAudio(); // 服务端已达 60s，停采集等最终结果
+        return;
+      }
+      if (typeof msg.text === "string" && msg.text) {
+        voice.latestText = msg.text;
+        input.value = msg.text; // 实时上屏
+        refreshMeta();
+      }
+      if (msg.final) finalizeVoice(false);
+    };
+    ws.onerror = () => finalizeVoice(true);
+    ws.onclose = () => finalizeVoice(true);
+
+    await new Promise((resolve, reject) => {
+      ws.addEventListener("open", resolve, { once: true });
+      ws.addEventListener("error", reject, { once: true });
+    });
+    if (cancelVoiceStart) {
+      try { ws.close(); } catch { /* 忽略 */ }
+      cleanupVoice();
+      setVoiceUI(false);
+      return;
+    }
+
+    // 3. 音频采集管线
+    let audioCtx;
+    try {
+      audioCtx = new AudioContext({ sampleRate: 16000 });
+    } catch {
+      audioCtx = new AudioContext(); // 不支持指定采样率则原生采集后重采样
+    }
+    await audioCtx.resume(); // iOS 必须在用户手势中 resume
+    if (!audioCtx.audioWorklet) {
+      throw new Error("unsupported");
+    }
+    await audioCtx.audioWorklet.addModule("recorder-worklet.js");
+    const source = audioCtx.createMediaStreamSource(stream);
+    const node = new AudioWorkletNode(audioCtx, "recorder");
+    const gain = audioCtx.createGain(); // 静音挂载，驱动 worklet 运行
+    gain.gain.value = 0;
+    source.connect(node);
+    node.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    voice.audioCtx = audioCtx;
+    voice.node = node;
+    voice.gain = gain;
+    voice.ratio = audioCtx.sampleRate / 16000;
+    voice.startTs = Date.now();
+
+    node.port.onmessage = (e) => {
+      if (!voice || voice.finishing || !voice.ws || voice.ws.readyState !== 1) return;
+      const pcm = floatTo16kPCM(e.data, voice.ratio);
+      voice.pending.push(pcm);
+      voice.pendingLen += pcm.length;
+      drainChunks(voice, false);
+    };
+
+    btnTranslate.textContent = "正在聆听…";
+    voice.countTimer = setInterval(() => {
+      if (!voice) return;
+      const elapsed = Date.now() - voice.startTs;
+      const remain = Math.max(0, Math.ceil((VOICE_MAX_MS - elapsed) / 1000));
+      btnTranslate.textContent = remain <= 10 ? "松开发送 · " + remain + "s" : "正在聆听…";
+      if (elapsed >= VOICE_MAX_MS) stopVoice(false);
+    }, 250);
+  } catch (err) {
+    if (voice) {
+      try { voice.ws.close(); } catch { /* 忽略 */ }
+      cleanupVoice();
+    }
+    setVoiceUI(false);
+    if (err && err.message === "unsupported") {
+      showToast("当前浏览器不支持语音输入，请升级浏览器", true);
+    } else if (!cancelVoiceStart) {
+      showToast("语音服务连接失败，请稍后重试", true);
+    }
+  } finally {
+    voiceStarting = false;
+  }
+}
+
 /* ---------- 事件绑定 ---------- */
 
 input.addEventListener("input", refreshMeta);
 
-btnTranslate.addEventListener("click", translate);
+// 翻译按钮：单击=翻译，长按=语音输入（鼠标与触摸统一走 Pointer Events）
+btnTranslate.addEventListener("pointerdown", (e) => {
+  if (translating || voice || voiceStarting) return;
+  e.preventDefault();
+  pressActive = true;
+  try { btnTranslate.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    startVoice();
+  }, LONG_PRESS_MS);
+});
+
+btnTranslate.addEventListener("pointerup", () => {
+  if (pressTimer) {
+    // 未达到长按阈值：单击翻译
+    clearTimeout(pressTimer);
+    pressTimer = null;
+    pressActive = false;
+    translate();
+    return;
+  }
+  pressActive = false;
+  stopVoice(false); // 长按松手：收尾并自动翻译
+});
+
+btnTranslate.addEventListener("pointercancel", () => {
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+  pressActive = false;
+  stopVoice(true); // 系统中断（来电/手势）：静默清理
+});
+
+btnTranslate.addEventListener("contextmenu", (e) => e.preventDefault());
+
+btnTranslate.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    translate();
+  }
+});
 
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
