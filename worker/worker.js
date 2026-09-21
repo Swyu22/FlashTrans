@@ -213,6 +213,8 @@ async function handleAsr(request, env, origin) {
         definite: utt.length ? !!utt[utt.length - 1].definite : false,
         duration: (payload.audio_info && payload.audio_info.duration) || 0,
         final: flags === 0b0011,
+        sentFrames: audioFrames,
+        sentBytes: audioBytes,
       });
       if (flags === 0b0011) end();
     } else if (mtype === 0b1111) {
@@ -258,17 +260,31 @@ async function handleAsr(request, env, origin) {
   }
 
   // 浏览器 -> 火山
-  server.addEventListener("message", (e) => {
+  let audioFrames = 0;
+  let audioBytes = 0;
+  server.addEventListener("message", async (e) => {
     if (ended) return;
-    const data = e.data;
+    let data = e.data;
     if (typeof data === "string") {
       let msg = null;
       try { msg = JSON.parse(data); } catch { /* 非 JSON 忽略 */ }
       if (msg && msg.type === "stop") finish();
       return;
     }
+    // 入站二进制帧同样可能以 Blob 投递（workerd#6615），需转 ArrayBuffer
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      try {
+        data = await data.arrayBuffer();
+      } catch {
+        return;
+      }
+      if (ended) return;
+    }
     try {
-      volcano.send(asrFrame(0x20, 0x00, new Uint8Array(data)));
+      const f = asrFrame(0x20, 0x00, new Uint8Array(data));
+      volcano.send(f.buffer.slice(f.byteOffset, f.byteOffset + f.byteLength));
+      audioFrames += 1;
+      audioBytes += data.byteLength || 0;
     } catch {
       end();
     }
