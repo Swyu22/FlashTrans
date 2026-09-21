@@ -93,7 +93,7 @@ function setLoading(on) {
 }
 
 async function translate() {
-  if (translating) return;
+  if (translating || voice || voiceStarting) return;
   const text = input.value.trim();
   if (!text) {
     showToast("请先输入要翻译的内容", true);
@@ -124,6 +124,9 @@ async function translate() {
         if (j && j.error) msg = j.error;
       } catch { /* 保留默认错误信息 */ }
       throw new Error(msg);
+    }
+    if (!resp.body) {
+      throw new Error("服务响应异常，请稍后重试");
     }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -161,7 +164,7 @@ async function translate() {
     if (e && e.name === "AbortError") {
       showToast("连接超时：当前网络可能无法访问翻译服务，请切换网络或开启代理后重试", true);
     } else {
-      showToast(e.message || "网络错误，请稍后重试", true);
+      showToast((e && e.message) || "网络错误，请稍后重试", true);
     }
   } finally {
     clearTimeout(watchdog);
@@ -177,11 +180,12 @@ const VOICE_MAX_MS = 60000; // 与服务端 60s 硬顶一致
 const CHUNK_BYTES = 6400; // 200ms @ 16kHz/16bit/单声道
 
 let pressTimer = null;
-let pressActive = false;
+let activePointerId = null; // 多点触控过滤：只响应第一根手指
 let voiceStarting = false;
 let cancelVoiceStart = false;
 let voice = null; // 录音会话状态
 let micStream = null; // 麦克风流常驻复用：授权一次，页面生命周期内不再重复弹权限
+let sharedAudioCtx = null; // 常驻 AudioContext：在 pointerdown 手势内创建/恢复（iOS 要求）
 
 async function getMicStream() {
   if (
@@ -197,6 +201,22 @@ async function getMicStream() {
   return micStream;
 }
 
+// 仅在用户手势上下文（pointerdown）中调用：创建并 resume 常驻 AudioContext
+function getSharedAudioCtx() {
+  if (typeof AudioContext === "undefined") return null;
+  if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+    try {
+      sharedAudioCtx = new AudioContext({ sampleRate: 16000 });
+    } catch {
+      sharedAudioCtx = new AudioContext(); // 不支持指定采样率则原生采样率，后续重采样
+    }
+  }
+  if (sharedAudioCtx.state === "suspended") {
+    sharedAudioCtx.resume().catch(() => {});
+  }
+  return sharedAudioCtx;
+}
+
 function setVoiceUI(active, label) {
   btnTranslate.classList.toggle("recording", active);
   btnTranslate.textContent = label || "翻 译";
@@ -206,15 +226,23 @@ function setVoiceUI(active, label) {
   input.readOnly = active;
 }
 
-function floatTo16kPCM(float32, ratio) {
-  const outLen = Math.floor(float32.length / ratio);
+// 重采样并累积：跨块保留余量样本，避免逐块丢尾造成的时间压缩
+function pushAudio(v, float32) {
+  const merged = new Float32Array(v.pcmCarry.length + float32.length);
+  merged.set(v.pcmCarry);
+  merged.set(float32, v.pcmCarry.length);
+  const outLen = Math.floor(merged.length / v.ratio);
   const out = new Int16Array(outLen);
   for (let i = 0; i < outLen; i++) {
-    let s = float32[Math.floor(i * ratio)];
+    let s = merged[Math.floor(i * v.ratio)];
     s = Math.max(-1, Math.min(1, s));
     out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
-  return new Uint8Array(out.buffer);
+  v.pcmCarry = merged.subarray(Math.floor(outLen * v.ratio));
+  const bytes = new Uint8Array(out.buffer);
+  v.pending.push(bytes);
+  v.pendingLen += bytes.length;
+  drainChunks(v, false);
 }
 
 // 把攒够的 PCM 以 200ms 一包发出；flushAll=true 时连尾包一起发
@@ -241,8 +269,7 @@ function stopLocalAudio() {
   clearInterval(voice.countTimer);
   try { voice.node && voice.node.disconnect(); } catch { /* 忽略 */ }
   try { voice.gain && voice.gain.disconnect(); } catch { /* 忽略 */ }
-  // 注意：不停止麦克风轨道（micStream 常驻复用，避免重复弹权限）
-  if (voice.audioCtx) voice.audioCtx.close().catch(() => {});
+  // 麦克风轨道与 AudioContext 均常驻复用，不在此关闭
 }
 
 function cleanupVoice() {
@@ -277,6 +304,7 @@ function stopVoice(cancelled) {
   btnTranslate.textContent = "识别中…";
   stopLocalAudio();
   if (cancelled) {
+    voice.cancelled = true;
     try { voice.ws.close(); } catch { /* 忽略 */ }
     cleanupVoice();
     setVoiceUI(false);
@@ -314,9 +342,10 @@ async function startVoice() {
     const ws = new WebSocket(ASR_URL);
     ws.binaryType = "arraybuffer";
     voice = {
-      ws, stream, audioCtx: null, node: null, gain: null,
+      ws, node: null, gain: null,
       pending: [], pendingLen: 0, latestText: "",
-      finishing: false, done: false, countTimer: null,
+      pcmCarry: new Float32Array(0),
+      finishing: false, done: false, cancelled: false, countTimer: null,
       startTs: Date.now(), ratio: 1,
     };
 
@@ -330,7 +359,12 @@ async function startVoice() {
         return;
       }
       if (msg.type === "timeout") {
-        stopLocalAudio(); // 服务端已达 60s，停采集等最终结果
+        // 服务端已达 60s：停止采集、进入收尾，等待最终结果
+        if (!voice.finishing) {
+          voice.finishing = true;
+          btnTranslate.textContent = "识别中…";
+          stopLocalAudio();
+        }
         return;
       }
       if (typeof msg.text === "string" && msg.text) {
@@ -347,25 +381,22 @@ async function startVoice() {
       ws.addEventListener("open", resolve, { once: true });
       ws.addEventListener("error", reject, { once: true });
     });
-    if (cancelVoiceStart) {
+    // 启动窗口检查点：松手/取消/异常后不再继续搭建
+    if (!voice || voice.done || cancelVoiceStart) {
       try { ws.close(); } catch { /* 忽略 */ }
-      cleanupVoice();
-      setVoiceUI(false);
       return;
     }
 
-    // 3. 音频采集管线
-    let audioCtx;
-    try {
-      audioCtx = new AudioContext({ sampleRate: 16000 });
-    } catch {
-      audioCtx = new AudioContext(); // 不支持指定采样率则原生采集后重采样
-    }
-    await audioCtx.resume(); // iOS 必须在用户手势中 resume
-    if (!audioCtx.audioWorklet) {
+    // 3. 音频采集管线（AudioContext 常驻，已在 pointerdown 手势中创建/恢复）
+    const audioCtx = sharedAudioCtx || getSharedAudioCtx();
+    if (!audioCtx || !audioCtx.audioWorklet) {
       throw new Error("unsupported");
     }
+    await audioCtx.resume(); // 幂等
     await audioCtx.audioWorklet.addModule("recorder-worklet.js");
+    if (!voice || voice.done || cancelVoiceStart) {
+      return;
+    }
     const source = audioCtx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(audioCtx, "recorder");
     const gain = audioCtx.createGain(); // 静音挂载，驱动 worklet 运行
@@ -374,7 +405,6 @@ async function startVoice() {
     node.connect(gain);
     gain.connect(audioCtx.destination);
 
-    voice.audioCtx = audioCtx;
     voice.node = node;
     voice.gain = gain;
     voice.ratio = audioCtx.sampleRate / 16000;
@@ -382,10 +412,7 @@ async function startVoice() {
 
     node.port.onmessage = (e) => {
       if (!voice || voice.finishing || !voice.ws || voice.ws.readyState !== 1) return;
-      const pcm = floatTo16kPCM(e.data, voice.ratio);
-      voice.pending.push(pcm);
-      voice.pendingLen += pcm.length;
-      drainChunks(voice, false);
+      pushAudio(voice, e.data);
     };
 
     btnTranslate.textContent = "正在聆听…";
@@ -397,6 +424,7 @@ async function startVoice() {
       if (elapsed >= VOICE_MAX_MS) stopVoice(false);
     }, 250);
   } catch (err) {
+    const hadVoice = voice && !voice.done && !voice.cancelled;
     if (voice) {
       try { voice.ws.close(); } catch { /* 忽略 */ }
       cleanupVoice();
@@ -404,7 +432,8 @@ async function startVoice() {
     setVoiceUI(false);
     if (err && err.message === "unsupported") {
       showToast("当前浏览器不支持语音输入，请升级浏览器", true);
-    } else if (!cancelVoiceStart) {
+    } else if (hadVoice && !cancelVoiceStart) {
+      // 仅在确属用户可见故障时提示；启动窗口内主动取消不报错
       showToast("语音服务连接失败，请稍后重试", true);
     }
   } finally {
@@ -420,7 +449,9 @@ input.addEventListener("input", refreshMeta);
 btnTranslate.addEventListener("pointerdown", (e) => {
   if (translating || voice || voiceStarting) return;
   e.preventDefault();
-  pressActive = true;
+  activePointerId = e.pointerId;
+  // 在用户手势上下文内创建/恢复常驻 AudioContext（iOS 硬性要求）
+  getSharedAudioCtx();
   try { btnTranslate.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
   pressTimer = setTimeout(() => {
     pressTimer = null;
@@ -428,25 +459,26 @@ btnTranslate.addEventListener("pointerdown", (e) => {
   }, LONG_PRESS_MS);
 });
 
-btnTranslate.addEventListener("pointerup", () => {
+btnTranslate.addEventListener("pointerup", (e) => {
+  if (e.pointerId !== activePointerId) return; // 忽略第二根手指
+  activePointerId = null;
   if (pressTimer) {
     // 未达到长按阈值：单击翻译
     clearTimeout(pressTimer);
     pressTimer = null;
-    pressActive = false;
     translate();
     return;
   }
-  pressActive = false;
   stopVoice(false); // 长按松手：收尾并自动翻译
 });
 
-btnTranslate.addEventListener("pointercancel", () => {
+btnTranslate.addEventListener("pointercancel", (e) => {
+  if (e.pointerId !== activePointerId) return;
+  activePointerId = null;
   if (pressTimer) {
     clearTimeout(pressTimer);
     pressTimer = null;
   }
-  pressActive = false;
   stopVoice(true); // 系统中断（来电/手势）：静默清理
 });
 
@@ -462,6 +494,7 @@ btnTranslate.addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
     e.preventDefault();
+    if (voice || voiceStarting) return; // 录音中不触发，避免吞掉语音结束后的自动翻译
     translate();
   }
 });

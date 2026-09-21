@@ -9,6 +9,7 @@ const MODEL = "deepseek-chat";
 const TEMPERATURE = 0.8;
 
 const MAX_TEXT_LEN = 8000; // 单次输入上限（字符）
+const MAX_BODY_LEN = 65536; // 请求体上限（字节）
 const RATE_PER_MIN = 20; // 每 IP 每分钟上限
 const RATE_PER_DAY = 200; // 每 IP 每天上限
 
@@ -28,6 +29,10 @@ const rateMap = new Map();
 function checkRate(ip) {
   const now = Date.now();
   let rec = rateMap.get(ip);
+  if (rec && now - rec.dayStart > 86_400_000) {
+    rateMap.delete(ip); // 惰性淘汰，防 Map 无界增长
+    rec = undefined;
+  }
   if (!rec) {
     rec = { minStart: now, minCount: 0, dayStart: now, dayCount: 0 };
     rateMap.set(ip, rec);
@@ -35,10 +40,6 @@ function checkRate(ip) {
   if (now - rec.minStart > 60_000) {
     rec.minStart = now;
     rec.minCount = 0;
-  }
-  if (now - rec.dayStart > 86_400_000) {
-    rec.dayStart = now;
-    rec.dayCount = 0;
   }
   if (rec.minCount >= RATE_PER_MIN || rec.dayCount >= RATE_PER_DAY) return false;
   rec.minCount += 1;
@@ -106,6 +107,10 @@ async function handleAsr(request, env, origin) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const now = Date.now();
   let rec = asrMap.get(ip);
+  if (rec && !rec.active && now - rec.dayStart > 86_400_000) {
+    asrMap.delete(ip); // 惰性淘汰
+    rec = undefined;
+  }
   if (!rec) {
     rec = { active: false, dayStart: now, daySeconds: 0 };
     asrMap.set(ip, rec);
@@ -120,6 +125,8 @@ async function handleAsr(request, env, origin) {
   if (rec.daySeconds >= ASR_DAILY_SECONDS) {
     return json({ error: "今日语音额度已用完，请明天再试" }, 429, base);
   }
+  // 立即占位，消除并发 upgrade 的 TOCTOU 竞态
+  rec.active = true;
 
   // 出站连接火山（鉴权头只在服务端出现）
   let vsResp;
@@ -135,10 +142,12 @@ async function handleAsr(request, env, origin) {
       },
     });
   } catch {
+    rec.active = false;
     return json({ error: "语音识别服务暂不可用，请稍后重试" }, 502, base);
   }
   const volcano = vsResp.webSocket;
   if (!volcano) {
+    rec.active = false;
     return json({ error: "语音识别服务握手失败" }, 502, base);
   }
 
@@ -146,10 +155,14 @@ async function handleAsr(request, env, origin) {
   const client = pair[0];
   const server = pair[1];
 
-  rec.active = true;
-  const startedAt = now;
+  const startedAt = Date.now();
   let ended = false;
   let finishing = false;
+  let audioFrames = 0;
+  let audioBytes = 0;
+  // 发送串行链：保证音频帧严格按到达顺序先于末包帧发出
+  //（入站 Blob 的 arrayBuffer() 转换是异步的，文本 stop 若不排队会插队）
+  let sendChain = Promise.resolve();
 
   const end = () => {
     if (ended) return;
@@ -172,10 +185,12 @@ async function handleAsr(request, env, origin) {
     setTimeout(end, 5_000); // 兜底：正常路径在收到最终包后 end()
   };
 
-  // 60s 硬顶：通知前端后立即进入收尾
+  // 60s 硬顶：通知前端后立即进入收尾（排队在在途音频之后）
   const hardTimer = setTimeout(() => {
-    sendClient({ type: "timeout" });
-    finish();
+    sendChain = sendChain.then(() => {
+      sendClient({ type: "timeout" });
+      finish();
+    });
   }, ASR_MAX_SESSION_MS);
 
   // 先挂火山侧监听，再 accept/send，避免竞态丢帧
@@ -200,24 +215,39 @@ async function handleAsr(request, env, origin) {
     let off = (pl[0] & 0x0f) * 4;
     if (mtype === 0b1001) {
       if (flags & 0b01) off += 4; // sequence 字段条件存在
+      if (off + 4 > pl.length) {
+        sendClient({ error: "识别服务返回了异常数据包" });
+        end();
+        return;
+      }
       const psize = view.getUint32(off);
       off += 4;
+      if (off + psize > pl.length) {
+        sendClient({ error: "识别服务返回了异常数据包" });
+        end();
+        return;
+      }
       let payload = {};
       try {
         payload = JSON.parse(new TextDecoder().decode(pl.subarray(off, off + psize)));
       } catch { /* 忽略损坏包 */ }
       const result = payload.result || {};
       const utt = result.utterances || [];
+      // 末包语义由 bit 0b0010 表达（带不带负 sequence 都算）
+      const isFinal = (flags & 0b0010) !== 0;
       sendClient({
         text: result.text || "",
         definite: utt.length ? !!utt[utt.length - 1].definite : false,
         duration: (payload.audio_info && payload.audio_info.duration) || 0,
-        final: flags === 0b0011,
-        sentFrames: audioFrames,
-        sentBytes: audioBytes,
+        final: isFinal,
       });
-      if (flags === 0b0011) end();
+      if (isFinal) end();
     } else if (mtype === 0b1111) {
+      if (off + 8 > pl.length) {
+        sendClient({ error: "识别服务返回了异常数据包" });
+        end();
+        return;
+      }
       const code = view.getUint32(off);
       const esize = view.getUint32(off + 4);
       const msg = new TextDecoder().decode(pl.subarray(off + 8, off + 8 + esize));
@@ -256,38 +286,45 @@ async function handleAsr(request, env, origin) {
   try {
     volcano.send(asrFrame(0x10, 0x10, initPayload));
   } catch {
+    end();
     return json({ error: "语音识别服务初始化失败" }, 502, base);
   }
 
   // 浏览器 -> 火山
-  let audioFrames = 0;
-  let audioBytes = 0;
-  server.addEventListener("message", async (e) => {
+  server.addEventListener("message", (e) => {
     if (ended) return;
-    let data = e.data;
+    const data = e.data;
     if (typeof data === "string") {
       let msg = null;
       try { msg = JSON.parse(data); } catch { /* 非 JSON 忽略 */ }
-      if (msg && msg.type === "stop") finish();
+      // stop 也排队，保证排在所有在途音频帧之后
+      if (msg && msg.type === "stop") {
+        sendChain = sendChain.then(() => finish());
+      }
       return;
     }
     // 入站二进制帧同样可能以 Blob 投递（workerd#6615），需转 ArrayBuffer
-    if (typeof Blob !== "undefined" && data instanceof Blob) {
-      try {
-        data = await data.arrayBuffer();
-      } catch {
-        return;
-      }
+    const buf = data;
+    sendChain = sendChain.then(async () => {
       if (ended) return;
-    }
-    try {
-      const f = asrFrame(0x20, 0x00, new Uint8Array(data));
-      volcano.send(f.buffer.slice(f.byteOffset, f.byteOffset + f.byteLength));
-      audioFrames += 1;
-      audioBytes += data.byteLength || 0;
-    } catch {
-      end();
-    }
+      let raw = buf;
+      if (typeof Blob !== "undefined" && raw instanceof Blob) {
+        try {
+          raw = await raw.arrayBuffer();
+        } catch {
+          return;
+        }
+        if (ended) return;
+      }
+      try {
+        const f = asrFrame(0x20, 0x00, new Uint8Array(raw));
+        volcano.send(f.buffer.slice(f.byteOffset, f.byteOffset + f.byteLength));
+        audioFrames += 1;
+        audioBytes += raw.byteLength || 0;
+      } catch {
+        end();
+      }
+    });
   });
   server.addEventListener("close", end);
   server.addEventListener("error", end);
@@ -312,6 +349,11 @@ export default {
     }
     if (request.method !== "POST") {
       return json({ error: "Method not allowed" }, 405, base);
+    }
+
+    const contentLength = +(request.headers.get("Content-Length") || 0);
+    if (contentLength > MAX_BODY_LEN) {
+      return json({ error: "请求体过大" }, 413, base);
     }
 
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
@@ -366,12 +408,19 @@ export default {
     }
 
     if (!dsResp.ok) {
-      let msg = "翻译服务异常（HTTP " + dsResp.status + "）";
-      try {
-        const j = await dsResp.json();
-        if (j && j.error && j.error.message) msg = j.error.message;
-      } catch { /* 保留默认错误信息 */ }
-      return json({ error: msg }, dsResp.status, base);
+      // 上游错误细节（余额/限流等账户状态）不透传给匿名客户端，仅按状态码映射
+      let msg = "翻译服务暂时不可用，请稍后重试";
+      let status = 502;
+      if (dsResp.status === 401) {
+        msg = "翻译服务配置异常，请联系站点管理员";
+      } else if (dsResp.status === 402) {
+        msg = "翻译服务额度不足，请联系站点管理员";
+      } else if (dsResp.status === 429) {
+        msg = "翻译服务繁忙，请稍后重试";
+        status = 429;
+      }
+      console.log("DeepSeek 上游错误:", dsResp.status, await dsResp.text().catch(() => ""));
+      return json({ error: msg }, status, base);
     }
 
     const headers = new Headers(base);

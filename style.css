@@ -210,6 +210,11 @@ textarea::placeholder { color: var(--ink-faint); }
 .btn-primary:hover { background: var(--blue-dark); }
 .btn-primary:active { transform: scale(0.98); }
 
+.btn-primary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+}
+
 .btn-primary:disabled {
   background: #93b4f5;
   cursor: not-allowed;

@@ -1,5 +1,5 @@
 /* FlashTrans Service Worker：网络优先、缓存兜底（离线可打开界面）；API 请求一律直连不缓存 */
-const CACHE = "flashtrans-v3";
+const CACHE = "flashtrans-v4";
 const ASSETS = ["./", "index.html", "style.css", "app.js", "manifest.json", "recorder-worklet.js"];
 
 self.addEventListener("install", (e) => {
@@ -23,10 +23,22 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     fetch(e.request)
       .then((resp) => {
-        const copy = resp.clone();
-        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        // 只缓存成功响应，避免把 404/500 固化进缓存
+        if (resp.ok) {
+          const copy = resp.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
         return resp;
       })
-      .catch(() => caches.match(e.request))
+      .catch(async () => {
+        const hit = await caches.match(e.request);
+        if (hit) return hit;
+        // 导航请求离线回退到首页；其余给受控错误
+        if (e.request.mode === "navigate") {
+          const home = await caches.match("./");
+          if (home) return home;
+        }
+        return Response.error();
+      })
   );
 });
