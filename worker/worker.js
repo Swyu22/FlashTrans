@@ -71,10 +71,222 @@ function json(data, status, base) {
   return new Response(JSON.stringify(data), { status, headers });
 }
 
+/* ---------------- 豆包流式 ASR 代理（/asr） ----------------
+ * 浏览器发裸 PCM（16k/16bit/单声道）+ JSON 控制消息；
+ * Worker 负责火山鉴权、二进制帧编解码（无压缩）、配额与收尾时序。
+ */
+const ASR_URL = "https://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
+const ASR_MAX_SESSION_MS = 60_000; // 单会话硬顶 60s
+const ASR_DAILY_SECONDS = 1_800; // 每 IP 每日 30 分钟
+
+// ip -> { active, dayStart, daySeconds }（内存近似计数）
+const asrMap = new Map();
+
+// 构造火山二进制帧：4 字节头 + 4 字节大端长度 + payload
+function asrFrame(headerByte1, headerByte2, payload) {
+  const out = new Uint8Array(8 + payload.length);
+  out[0] = 0x11; // version 1, header size 1
+  out[1] = headerByte1;
+  out[2] = headerByte2;
+  out[3] = 0x00;
+  new DataView(out.buffer).setUint32(4, payload.length);
+  out.set(payload, 8);
+  return out;
+}
+
+async function handleAsr(request, env, origin) {
+  const base = corsHeaders(origin);
+  if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
+    return json({ error: "Expected WebSocket" }, 426, base);
+  }
+  if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+    return json({ error: "Forbidden origin" }, 403, base);
+  }
+
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const now = Date.now();
+  let rec = asrMap.get(ip);
+  if (!rec) {
+    rec = { active: false, dayStart: now, daySeconds: 0 };
+    asrMap.set(ip, rec);
+  }
+  if (now - rec.dayStart > 86_400_000) {
+    rec.dayStart = now;
+    rec.daySeconds = 0;
+  }
+  if (rec.active) {
+    return json({ error: "已有进行中的语音会话，请稍后再试" }, 429, base);
+  }
+  if (rec.daySeconds >= ASR_DAILY_SECONDS) {
+    return json({ error: "今日语音额度已用完，请明天再试" }, 429, base);
+  }
+
+  // 出站连接火山（鉴权头只在服务端出现）
+  let vsResp;
+  try {
+    vsResp = await fetch(ASR_URL, {
+      headers: {
+        Upgrade: "websocket",
+        "X-Api-Key": env.DOUBAO_API_KEY,
+        "X-Api-Resource-Id": env.ASR_RESOURCE_ID || "volc.seedasr.sauc.duration",
+        "X-Api-Connect-Id": crypto.randomUUID(),
+        "X-Api-Request-Id": crypto.randomUUID(),
+        "X-Api-Sequence": "-1",
+      },
+    });
+  } catch {
+    return json({ error: "语音识别服务暂不可用，请稍后重试" }, 502, base);
+  }
+  const volcano = vsResp.webSocket;
+  if (!volcano) {
+    return json({ error: "语音识别服务握手失败" }, 502, base);
+  }
+
+  const pair = new WebSocketPair();
+  const client = pair[0];
+  const server = pair[1];
+
+  rec.active = true;
+  const startedAt = now;
+  let ended = false;
+  let finishing = false;
+
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    rec.active = false;
+    rec.daySeconds += Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    clearTimeout(hardTimer);
+    try { volcano.close(1000); } catch { /* 已关闭 */ }
+    try { server.close(1000); } catch { /* 已关闭 */ }
+  };
+
+  const sendClient = (obj) => {
+    try { server.send(JSON.stringify(obj)); } catch { /* 已关闭 */ }
+  };
+
+  const finish = () => {
+    if (finishing || ended) return;
+    finishing = true;
+    try { volcano.send(asrFrame(0x22, 0x00, new Uint8Array(0))); } catch { /* 已关闭 */ }
+    setTimeout(end, 5_000); // 兜底：正常路径在收到最终包后 end()
+  };
+
+  // 60s 硬顶：通知前端后立即进入收尾
+  const hardTimer = setTimeout(() => {
+    sendClient({ type: "timeout" });
+    finish();
+  }, ASR_MAX_SESSION_MS);
+
+  // 先挂火山侧监听，再 accept/send，避免竞态丢帧
+  volcano.addEventListener("message", async (e) => {
+    if (ended) return;
+    let data = e.data;
+    if (typeof data === "string") return;
+    // workerd 新版运行时二进制帧以 Blob 投递（workerd#6615），需转 ArrayBuffer
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      try {
+        data = await data.arrayBuffer();
+      } catch {
+        return;
+      }
+      if (ended) return;
+    }
+    const pl = new Uint8Array(data);
+    if (pl.length < 8) return;
+    const mtype = pl[1] >> 4;
+    const flags = pl[1] & 0x0f;
+    const view = new DataView(pl.buffer, pl.byteOffset, pl.byteLength);
+    let off = (pl[0] & 0x0f) * 4;
+    if (mtype === 0b1001) {
+      if (flags & 0b01) off += 4; // sequence 字段条件存在
+      const psize = view.getUint32(off);
+      off += 4;
+      let payload = {};
+      try {
+        payload = JSON.parse(new TextDecoder().decode(pl.subarray(off, off + psize)));
+      } catch { /* 忽略损坏包 */ }
+      const result = payload.result || {};
+      const utt = result.utterances || [];
+      sendClient({
+        text: result.text || "",
+        definite: utt.length ? !!utt[utt.length - 1].definite : false,
+        duration: (payload.audio_info && payload.audio_info.duration) || 0,
+        final: flags === 0b0011,
+      });
+      if (flags === 0b0011) end();
+    } else if (mtype === 0b1111) {
+      const code = view.getUint32(off);
+      const esize = view.getUint32(off + 4);
+      const msg = new TextDecoder().decode(pl.subarray(off + 8, off + 8 + esize));
+      sendClient({ error: "语音识别错误（" + code + "）：" + msg });
+      end();
+    }
+  });
+  volcano.addEventListener("close", (e) => {
+    if (!ended) {
+      sendClient({
+        error:
+          "识别服务连接已关闭（code " +
+          (e && e.code) +
+          "）：" +
+          ((e && e.reason) || "无原因"),
+      });
+      end();
+    }
+  });
+  volcano.addEventListener("error", () => {
+    sendClient({ error: "识别服务连接异常" });
+    end();
+  });
+
+  volcano.accept();
+  server.accept();
+
+  // 首包：识别参数（无压缩 JSON）
+  const initPayload = new TextEncoder().encode(
+    JSON.stringify({
+      user: { uid: "flashtrans-web" },
+      audio: { format: "pcm", rate: 16000, bits: 16, channel: 1 },
+      request: { model_name: "bigmodel", enable_itn: true, enable_punc: true },
+    })
+  );
+  try {
+    volcano.send(asrFrame(0x10, 0x10, initPayload));
+  } catch {
+    return json({ error: "语音识别服务初始化失败" }, 502, base);
+  }
+
+  // 浏览器 -> 火山
+  server.addEventListener("message", (e) => {
+    if (ended) return;
+    const data = e.data;
+    if (typeof data === "string") {
+      let msg = null;
+      try { msg = JSON.parse(data); } catch { /* 非 JSON 忽略 */ }
+      if (msg && msg.type === "stop") finish();
+      return;
+    }
+    try {
+      volcano.send(asrFrame(0x20, 0x00, new Uint8Array(data)));
+    } catch {
+      end();
+    }
+  });
+  server.addEventListener("close", end);
+  server.addEventListener("error", end);
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
     const base = corsHeaders(origin);
+
+    if (new URL(request.url).pathname === "/asr") {
+      return handleAsr(request, env, origin);
+    }
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: base });

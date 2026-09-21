@@ -3,6 +3,9 @@
   "main": "worker.js",
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
+  "vars": {
+    "ASR_RESOURCE_ID": "volc.seedasr.sauc.duration"
+  },
   "routes": [
     { "pattern": "api.flashtrans.xyz", "custom_domain": true }
   ]

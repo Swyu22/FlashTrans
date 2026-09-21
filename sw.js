@@ -1,6 +1,6 @@
 /* FlashTrans Service Worker：网络优先、缓存兜底（离线可打开界面）；API 请求一律直连不缓存 */
-const CACHE = "flashtrans-v2";
-const ASSETS = ["./", "index.html", "style.css", "app.js", "manifest.json"];
+const CACHE = "flashtrans-v3";
+const ASSETS = ["./", "index.html", "style.css", "app.js", "manifest.json", "recorder-worklet.js"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
