@@ -393,7 +393,7 @@ async function startVoice() {
       throw new Error("unsupported");
     }
     await audioCtx.resume(); // 幂等
-    await audioCtx.audioWorklet.addModule("recorder-worklet.js");
+    await audioCtx.audioWorklet.addModule("recorder-worklet.js?v=20260922");
     if (!voice || voice.done || cancelVoiceStart) {
       return;
     }
