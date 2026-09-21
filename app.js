@@ -181,6 +181,21 @@ let pressActive = false;
 let voiceStarting = false;
 let cancelVoiceStart = false;
 let voice = null; // 录音会话状态
+let micStream = null; // 麦克风流常驻复用：授权一次，页面生命周期内不再重复弹权限
+
+async function getMicStream() {
+  if (
+    micStream &&
+    micStream.active &&
+    micStream.getAudioTracks().some((t) => t.readyState === "live")
+  ) {
+    return micStream;
+  }
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  });
+  return micStream;
+}
 
 function setVoiceUI(active, label) {
   btnTranslate.classList.toggle("recording", active);
@@ -226,7 +241,7 @@ function stopLocalAudio() {
   clearInterval(voice.countTimer);
   try { voice.node && voice.node.disconnect(); } catch { /* 忽略 */ }
   try { voice.gain && voice.gain.disconnect(); } catch { /* 忽略 */ }
-  if (voice.stream) voice.stream.getTracks().forEach((t) => t.stop());
+  // 注意：不停止麦克风轨道（micStream 常驻复用，避免重复弹权限）
   if (voice.audioCtx) voice.audioCtx.close().catch(() => {});
 }
 
@@ -281,19 +296,16 @@ async function startVoice() {
   cancelVoiceStart = false;
   setVoiceUI(true, "准备中…");
   try {
-    // 1. 先取麦克风权限（拒绝则直接复位）
+    // 1. 先取麦克风权限（拒绝则直接复位；流常驻，后续不再弹权限）
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      });
+      stream = await getMicStream();
     } catch {
       setVoiceUI(false);
       showToast("无法访问麦克风，请检查浏览器权限设置", true);
       return;
     }
     if (cancelVoiceStart) {
-      stream.getTracks().forEach((t) => t.stop());
       setVoiceUI(false);
       return;
     }
