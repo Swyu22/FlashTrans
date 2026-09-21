@@ -266,7 +266,12 @@ textarea::placeholder { color: var(--ink-faint); }
 
 /* 桌面端（视口 >768px）：左右双栏，左原文右译文；移动端保持现状 */
 @media (min-width: 769px) {
-  .panels { grid-template-columns: 1fr 1fr; }
+  .panels {
+    grid-template-columns: 1fr 1fr;
+    /* 拉宽至与顶部分割线同宽，面板外边缘与线两端对齐 */
+    max-width: 1380px;
+    padding: 0;
+  }
 
   /* 每窗高度 = 译文高 + 间隔 + 原文高，尽量多显示长文 */
   .panel {
