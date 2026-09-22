@@ -217,6 +217,63 @@ function getSharedAudioCtx() {
   return sharedAudioCtx;
 }
 
+/* ---- 语音预热：pointerdown 即开始，争取 500ms 阈值到时直接进"聆听" ---- */
+let voicePrep = null; // { ws, openP, workletP, error, cancelled }
+
+function prepareVoice() {
+  if (voicePrep || voice || voiceStarting || translating) return;
+  const ws = new WebSocket(ASR_URL);
+  ws.binaryType = "arraybuffer";
+  voicePrep = {
+    ws,
+    openP: null,
+    workletP: null,
+    error: null,
+    cancelled: false,
+    wsReady: false,
+  };
+  voicePrep.openP = new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", reject, { once: true });
+  });
+  voicePrep.openP
+    .then(() => { if (voicePrep) voicePrep.wsReady = true; })
+    .catch((e) => { if (voicePrep) voicePrep.error = e; });
+
+  // 麦克风：只有已授权过才预热（避免单击翻译的用户被权限弹窗打扰）
+  (async () => {
+    if (micStream) return; // 常驻流已在，零成本
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const st = await navigator.permissions.query({ name: "microphone" });
+        if (st.state !== "granted") return;
+      }
+    } catch {
+      return; // 查询能力缺失则不预热，按阈值时申请
+    }
+    try {
+      await getMicStream();
+    } catch (e) {
+      if (voicePrep) voicePrep.error = e;
+    }
+  })();
+
+  // worklet 模块预载（无副作用）
+  const ctx = sharedAudioCtx;
+  if (ctx && ctx.audioWorklet) {
+    voicePrep.workletP = ctx.audioWorklet
+      .addModule("recorder-worklet.js?v=20260922")
+      .catch((e) => { if (voicePrep) voicePrep.error = e; });
+  }
+}
+
+function discardVoicePrep() {
+  if (!voicePrep) return;
+  voicePrep.cancelled = true;
+  try { voicePrep.ws.close(); } catch { /* 忽略 */ }
+  voicePrep = null;
+}
+
 function setVoiceUI(active, label) {
   btnTranslate.classList.toggle("recording", active);
   btnTranslate.textContent = label || "翻 译";
@@ -322,7 +379,10 @@ async function startVoice() {
   if (voice || voiceStarting || translating) return;
   voiceStarting = true;
   cancelVoiceStart = false;
-  setVoiceUI(true, "准备中…");
+  // 接管 pointerdown 时的预热成果（WS 建连 / 麦克风 / worklet）
+  const prep = voicePrep;
+  voicePrep = null;
+  setVoiceUI(true, prep && prep.wsReady && !prep.error ? "正在聆听…" : "准备中…");
   try {
     // 1. 先取麦克风权限（拒绝则直接复位；流常驻，后续不再弹权限）
     let stream;
@@ -331,16 +391,29 @@ async function startVoice() {
     } catch {
       setVoiceUI(false);
       showToast("无法访问麦克风，请检查浏览器权限设置", true);
+      if (prep) { try { prep.ws.close(); } catch { /* 忽略 */ } }
       return;
     }
     if (cancelVoiceStart) {
       setVoiceUI(false);
+      if (prep) { try { prep.ws.close(); } catch { /* 忽略 */ } }
       return;
     }
 
-    // 2. 连接 ASR 代理
-    const ws = new WebSocket(ASR_URL);
-    ws.binaryType = "arraybuffer";
+    // 2. 连接 ASR 代理：优先复用预热的连接，预热失败则新建
+    let ws, openP;
+    if (prep && !prep.cancelled && !prep.error) {
+      ws = prep.ws;
+      openP = prep.openP;
+    } else {
+      if (prep) { try { prep.ws.close(); } catch { /* 忽略 */ } }
+      ws = new WebSocket(ASR_URL);
+      ws.binaryType = "arraybuffer";
+      openP = new Promise((resolve, reject) => {
+        ws.addEventListener("open", resolve, { once: true });
+        ws.addEventListener("error", reject, { once: true });
+      });
+    }
     voice = {
       ws, node: null, gain: null,
       pending: [], pendingLen: 0, latestText: "",
@@ -377,10 +450,7 @@ async function startVoice() {
     ws.onerror = () => finalizeVoice(true);
     ws.onclose = () => finalizeVoice(true);
 
-    await new Promise((resolve, reject) => {
-      ws.addEventListener("open", resolve, { once: true });
-      ws.addEventListener("error", reject, { once: true });
-    });
+    await openP; // 预热过的连接通常已完成握手，此处零等待
     // 启动窗口检查点：松手/取消/异常后不再继续搭建
     if (!voice || voice.done || cancelVoiceStart) {
       try { ws.close(); } catch { /* 忽略 */ }
@@ -393,7 +463,12 @@ async function startVoice() {
       throw new Error("unsupported");
     }
     await audioCtx.resume(); // 幂等
-    await audioCtx.audioWorklet.addModule("recorder-worklet.js?v=20260922");
+    if (prep && prep.workletP) {
+      await prep.workletP; // 预热过的模块加载通常已完成
+      if (prep.error) throw prep.error;
+    } else {
+      await audioCtx.audioWorklet.addModule("recorder-worklet.js?v=20260922");
+    }
     if (!voice || voice.done || cancelVoiceStart) {
       return;
     }
@@ -452,6 +527,8 @@ btnTranslate.addEventListener("pointerdown", (e) => {
   activePointerId = e.pointerId;
   // 在用户手势上下文内创建/恢复常驻 AudioContext（iOS 硬性要求）
   getSharedAudioCtx();
+  // 按下即预热：WS 建连 + worklet 预载 +（已授权时）麦克风，与 500ms 阈值并行
+  prepareVoice();
   try { btnTranslate.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
   pressTimer = setTimeout(() => {
     pressTimer = null;
@@ -463,9 +540,10 @@ btnTranslate.addEventListener("pointerup", (e) => {
   if (e.pointerId !== activePointerId) return; // 忽略第二根手指
   activePointerId = null;
   if (pressTimer) {
-    // 未达到长按阈值：单击翻译
+    // 未达到长按阈值：单击翻译（静默丢弃预热连接）
     clearTimeout(pressTimer);
     pressTimer = null;
+    discardVoicePrep();
     translate();
     return;
   }
@@ -478,6 +556,8 @@ btnTranslate.addEventListener("pointercancel", (e) => {
   if (pressTimer) {
     clearTimeout(pressTimer);
     pressTimer = null;
+    discardVoicePrep(); // 系统中断：静默丢弃预热
+    return;
   }
   stopVoice(true); // 系统中断（来电/手势）：静默清理
 });
